@@ -9,7 +9,7 @@ const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 const app = express();
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const TELEFONO_WHATSAPP = process.env.TELEFONO_WHATSAPP || "51902707635";
+const TELEFONO_WHATSAPP = process.env.TELEFONO_WHATSAPP || "51936709598";
 
 // Middlewares
 app.use(cors());
