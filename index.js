@@ -63,16 +63,26 @@ function cargarCatalogo() {
         });
 }
 
-function buscarRecomendaciones(diagnosticoIA) {
+// Genera un texto plano con el catálogo para inyectarlo en el prompt de la IA
+function obtenerCatalogoParaIA() {
+    return catalogoEnMemoria.map(prod => 
+        `- Nombre: ${prod.nombre} | Uso: ${prod.categorias} ${prod.etiquetas}`
+    ).join('\n');
+}
+
+function buscarRecomendacionesPorNombre(nombresRecomendadosIA) {
     const productosDisponibles = [];
     const productosAgotados = [];
-    const palabraClave = diagnosticoIA.etiqueta_busqueda.toLowerCase();
+
+    // Validar que la IA haya devuelto un array
+    if (!Array.isArray(nombresRecomendadosIA)) {
+        return { productosDisponibles, productosAgotados };
+    }
 
     catalogoEnMemoria.forEach(prod => {
-        const textoParaBuscar = `${prod.etiquetas}`.toLowerCase();
-        if (textoParaBuscar.includes(palabraClave)) {
+        // Buscamos si el nombre del producto está en la lista que recomendó la IA
+        if (nombresRecomendadosIA.includes(prod.nombre)) {
             const tieneStock = prod.inventario > 0 || prod.existencias === '1' || prod.existencias.toLowerCase() === 'instock';
-
             const productoInfo = { Producto: prod.nombre, Precio: `S/ ${prod.precio}` };
 
             if (tieneStock) {
@@ -106,27 +116,19 @@ app.post('/api/diagnosticar', upload.single('imagen'), async (req, res) => {
     }
 
     try {
-        const prompt = `Eres un ingeniero civil y patólogo de la construcción experto. 
-        Analiza la imagen adjunta y devuelve ÚNICAMENTE un objeto JSON evaluando el problema.
-        
-        Estructura requerida:
+        const systemInstructions = `Eres un ingeniero civil y patólogo de la construcción experto. 
+        Devuelve ÚNICAMENTE un objeto JSON con esta estructura exacta:
         {
-          "diagnostico_cliente": "Explicación técnica pero fácil de entender de 3 líneas sobre el problema visualizado.",
-          "etiqueta_busqueda": "ELIGE_UNA_OPCION"
+            "diagnostico_tecnico": "Explicación técnica de 3 líneas evaluando el problema y la solución.",
+            "productos_recomendados": ["Nombre Exacto Producto 1", "Nombre Exacto Producto 2"]
         }
 
-        Para "etiqueta_busqueda", analiza cuidadosamente la imagen y elige ESTRICTAMENTE UNA de estas opciones del catálogo, basándote en estos criterios visuales:
-        - moho_hongos: Manchas orgánicas negras/verdes por humedad constante.
-        - filtracion_activa: Paso de agua evidente a través de techos, muros o losas.
-        - humedad_ascendente: Desprendimiento o salitre en la PARTE BAJA de los muros.
-        - grieta_estructural: Aberturas anchas y profundas (>3mm).
-        - fisura_superficial: Aberturas como tela de araña en tarrajeo o pintura.
-        - borde_danado: Despostillamientos en esquinas de columnas o vigas.
-        - cangrejera: "Nido de abejas", falta de pasta, piedras visibles.
-        - junta_dilatacion: Separaciones perfectas entre bloques o losas.
-        - acero_expuesto: Varillas de fierro oxidadas visibles.
-        - acelerante: Necesidad operativa (frío, lluvia o prisa).
-        - no_identificado: Imagen borrosa o sin relación con construcción.`;
+        CATÁLOGO DE PRODUCTOS DISPONIBLES:
+        ${obtenerCatalogoParaIA()}
+
+        IMPORTANTE:
+        1. Recomienda entre 1 y 3 productos de este catálogo que solucionen el problema del cliente de forma integral.
+        2. Los textos en el array "productos_recomendados" DEBEN ser idénticos a los nombres listados en el catálogo proporcionado. No inventes productos que no estén en la lista.`;
 
         const imagePart = {
             inlineData: {
@@ -229,17 +231,18 @@ app.post('/api/diagnostico-completo', upload.single('imagen'), async (req, res) 
         // Si existe una etiqueta mapeada, OBLIGAMOS a la IA a usarla. 
         // Si no existe (ej. eligió "Otro problema"), le damos la lista para que elija.
         const systemInstructions = `Eres un ingeniero civil y patólogo de la construcción experto. 
-        Devuelve ÚNICAMENTE un objeto JSON con esta estructura:
+        Devuelve ÚNICAMENTE un objeto JSON con esta estructura exacta:
         {
             "diagnostico_tecnico": "Explicación técnica de 3 líneas evaluando el problema y la solución.",
-            "etiqueta_busqueda": "ETIQUETA"
+            "productos_recomendados": ["Nombre Exacto Producto 1", "Nombre Exacto Producto 2"]
         }
-        
-        IMPORTANTE PARA LA "etiqueta_busqueda":
-        ${etiquetaForzada
-                ? `DEBES USAR ESTRICTAMENTE LA ETIQUETA: "${etiquetaForzada}". No inventes otra.`
-                : `Elige ESTRICTAMENTE UNA de estas: moho_hongos, filtracion_activa, humedad_ascendente, grieta_estructural, fisura_superficial, borde_danado, cangrejera, junta_dilatacion, acero_expuesto, acelerante.`
-            }`;
+
+        CATÁLOGO DE PRODUCTOS DISPONIBLES:
+        ${obtenerCatalogoParaIA()}
+
+        IMPORTANTE:
+        1. Recomienda entre 1 y 3 productos de este catálogo que solucionen el problema del cliente de forma integral.
+        2. Los textos en el array "productos_recomendados" DEBEN ser idénticos a los nombres listados en el catálogo proporcionado. No inventes productos que no estén en la lista.`;
 
         let iaData;
         if (req.file) {
@@ -289,16 +292,10 @@ app.post('/api/diagnostico-completo', upload.single('imagen'), async (req, res) 
             iaData = JSON.parse(response.data.choices[0].message.content);
         }
 
-        // 3. BÚSQUEDA Y SELECCIÓN DE PRODUCTOS (Común para ambas IAs)
-        console.log(`🏷️ Etiqueta exacta elegida por la IA: "${iaData.etiqueta_busqueda}"`);
-        const resultados = buscarRecomendaciones(iaData);
-        const todosLosProductos = [...resultados.productosDisponibles, ...resultados.productosAgotados];
-        console.log(`📦 Productos encontrados en el CSV para esa etiqueta: ${todosLosProductos.length}`);
-
-        // Seleccionamos máximo 3 productos aleatorios exactos
-        const productosSeleccionados = todosLosProductos
-            .sort(() => 0.5 - Math.random())
-            .slice(0, 3);
+        // 3. BÚSQUEDA DE PRODUCTOS EXACTOS RECOMENDADOS POR LA IA
+        console.log(`🏷️ Productos elegidos por la IA:`, iaData.productos_recomendados);
+        const resultados = buscarRecomendacionesPorNombre(iaData.productos_recomendados);
+        const productosSeleccionados = [...resultados.productosDisponibles, ...resultados.productosAgotados];
 
         // 4. RESPUESTA AL FRONTEND
         res.json({
@@ -310,6 +307,7 @@ app.post('/api/diagnostico-completo', upload.single('imagen'), async (req, res) 
                 `Contexto: Problema reportado como '${problema}' en ${superficie} de ${area}m².`,
                 "Recomendación: Aplicar los siguientes productos sugeridos según su ficha técnica."
             ],
+            // Mapeamos solo los nombres para mantener compatibilidad con tu Frontend actual
             productos: productosSeleccionados.map(p => p.Producto)
         });
 
